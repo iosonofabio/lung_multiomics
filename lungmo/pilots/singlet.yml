@@ -1,0 +1,14 @@
+io:
+  count_tables:
+    human_d1:
+      path: '../../data/lungmap/human_d1/LMEX0000001623_normalized_expression_matrix.txt.gz'
+      format: 'tsv.gz'
+      bit_precision: 32
+      normalized: yes
+
+    human_m21:
+      path: '../../data/lungmap/human_m21/LMEX0000001625_raw_expression_matrix.txt.gz'
+      format: 'tsv.gz'
+      bit_precision: 32
+      normalized: no
+
