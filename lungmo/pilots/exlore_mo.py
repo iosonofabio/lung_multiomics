@@ -161,11 +161,12 @@ if __name__ == '__main__':
         assignment_d = {
             'Gja5': 'Arterial EC',
             'Ccl21a': 'Lymphatic EC',
-            'Car8': 'Venous EC',
-            'Hpgd': 'CAP 1',
+            'Slc6a2': 'Venous EC',
+            'Hpgd': 'CAP1',
             'Car4': 'CAP2',
             'C1qa': 'Interstitial mac',
             'Itgax': 'Alveolar mac',
+            'Plac8': 'Monocyte',
             'Itgae': 'cDC1',
             'Cd209a': 'cDC2',
             'Mreg': 'cDC3',
@@ -205,7 +206,8 @@ if __name__ == '__main__':
         manual_corr = {
             '0': 'Alveolar FB',
             '1': 'Low-quality',
-            '2': 'CAP 1',
+            '2': 'CAP1',
+            '25': 'Venous EC',
             '3': 'Epithelial',
             '7': 'Alveolar FB',
             '5': 'Adventitial FB',
@@ -215,8 +217,61 @@ if __name__ == '__main__':
             '11': 'Mese of some kind?',
             '12': 'ASM',
             '15': 'Epithelial 3',
+            '19': 'Monocyte',
         }
         cell_type_d.update(manual_corr)
         adata_ge.obs['Cell Type'] = pd.Categorical(
             adata_ge.obs['leiden'].map(cell_type_d),
         )
+        adata_nor.obs['Cell Type'] = adata_ge.obs['Cell Type']
+
+    if True:
+        print('DE and DA within lineages')
+        lineages = {
+            'Endothelial': [
+                'Arterial EC',
+                'Venous EC',
+                'Lymphatic EC',
+                'CAP1',
+                'CAP2',
+            ],
+            'Immune': [
+                'T cell',
+                'B cell',
+                'NK cell',
+                'Alveolar mac',
+                'Interstitial mac',
+                'Monocyte',
+            ],
+            # TODO
+        }
+
+        lineage = 'Endothelial'
+        adata_nor_gr = adata_nor[adata_nor.obs['Cell Type'].isin(lineages[lineage])]
+        adata_pe = adata_nor_gr[:, adata_nor_gr.var['feature_types'] == 'Peaks']
+        sc.tl.rank_genes_groups(adata_pe, 'Cell Type', method='wilcoxon')
+        
+        da_lineage_dict = {}
+        tmp = adata_pe.uns['rank_genes_groups']
+        cell_types = tmp['names'].dtype.names
+        for i, ct in enumerate(cell_types):
+            idx = [x[i] for x in tmp['names']]
+            log_fc = [x[i] for x in tmp['logfoldchanges']]
+            score = [x[i] for x in tmp['scores']]
+            pval = [x[i] for x in tmp['pvals']]
+            df = pd.DataFrame({
+                'feature': idx,
+                'logfc': log_fc,
+                'score': score,
+                'pval': pval,
+            }).set_index('feature')
+            tmpi = df.index.str.split(':', expand=True).to_frame()
+            tmpii = tmpi[1].str.split('-', expand=True).astype(int)
+            df['chromosome'] = tmpi[0].values
+            df['start'] = tmpii[0].values
+            df['end'] = tmpii[1].values
+            da_lineage_dict[ct] = df
+
+
+
+
