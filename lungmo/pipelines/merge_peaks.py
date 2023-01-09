@@ -12,6 +12,52 @@ import pandas as pd
 import anndata
 
 
+def annotate_genes(genes):
+    import gzip
+    gtf_file = '../../data/gene_annotations/mm10.ncbiRefSeq.gtf.gz'
+    with gzip.open(gtf_file, 'rt') as gtf:
+        transcript_annos = []
+        for line in gtf:
+            if '\ttranscript\t' not in line:
+                continue
+            fields = line.split('\t')
+            if fields[2] != 'transcript':
+                continue
+            attrs = fields[-1].split(';')
+            gene_name = None
+            transcript_id = None
+            for attr in attrs:
+                if 'gene_name' in attr:
+                    gene_name = attr.split(' ')[-1][1:-1]
+                elif 'transcript_id' in attr:
+                    transcript_id = attr.split(' ')[-1][1:-1]
+            if (gene_name is None) or (transcript_id is None):
+                continue
+            transcript_annos.append({
+                'transcript_id': transcript_id,
+                'gene_name': gene_name,
+                'chromosome_name': fields[0],
+                'start_position': int(fields[3]),
+                'end_position': int(fields[4]),
+                'strand': 1 if fields[6] == '+' else -1,
+                'transcription_start_site': int(fields[3]) if fields[6] == '+' else int(fields[4]),
+                })
+    transcript_annos = pd.DataFrame(transcript_annos)
+
+    gene_annos = transcript_annos[['gene_name', 'chromosome_name', 'strand']].groupby('gene_name').first()
+    gene_annos['start_position'] = transcript_annos[['gene_name', 'start_position']].groupby('gene_name').min()['start_position']
+    gene_annos['end_position'] = transcript_annos[['gene_name', 'end_position']].groupby('gene_name').min()['end_position']
+
+    # Align index
+    gene_annos = gene_annos.reindex(genes)
+    gene_annos['chromosome_name'] = gene_annos['chromosome_name'].fillna('')
+    gene_annos['strand'] = gene_annos['strand'].fillna(0).astype('i2')
+    gene_annos['start_position'] = gene_annos['start_position'].fillna(-1).astype('i8')
+    gene_annos['end_position'] = gene_annos['end_position'].fillna(-1).astype('i8')
+
+    return gene_annos
+
+
 if __name__ == '__main__':
 
     overlap_threshold = 0.4
@@ -88,17 +134,48 @@ if __name__ == '__main__':
     )
 
     
+    peaks_shared = list(peaks_merged['name'].values)
     adata_to_merge = []
     for i, adata in enumerate(adatas, 1):
         # I checked, the genes are the same (come from the GTF)
         genes = list(adata.var_names[adata.var['feature_types'] == 'Gene Expression'])
-        peaks_shared = list(peaks_merged[f'name{i}'].values)
-        features = genes + peaks_shared
-        adata_to_merge.append(adata[:, features])
-
+        peaks_i = list(peaks_merged[f'name{i}'].values)
+        features_i = genes + peaks_i
+        features_new = genes + peaks_shared
+        adata = adata[:, features_i]
+        # Rename peaks
+        adata.var.index = features_new
+        # Add to merge
+        adata_to_merge.append(adata)
+    # Perform the merge
     adata_merged = anndata.concat(
             adata_to_merge,
             index_unique=':',
             keys=['nor-1', 'nor-2'],
     )
+    adata_merged.var['feature_id'] = adata_merged.var_names
+    adata_merged.var.loc[genes, 'feature_id'] = adata.var.loc[genes, 'feature_id']
+    adata_merged.var['feature_types'] = 'Peaks'
+    adata_merged.var.loc[genes, 'feature_types'] = 'Gene Expression'
+
+    # Annotate gene coordinates since we are here
+    gene_annos = annotate_genes(genes)
+    peak_annos = peaks_merged['name'].str.split(':', expand=True).rename(columns={0: 'chromosome'})
+    tmp = peak_annos[1].str.split('-', expand=True).astype(int)
+    del peak_annos[1]
+    peak_annos['start'] = tmp[0]
+    peak_annos['end'] = tmp[1]
+    del tmp
+    adata_merged.var['strand'] = 0
+    adata_merged.var.loc[genes, 'strand'] = gene_annos['strand']
+    adata_merged.var['chromosome'] = ''
+    adata_merged.var.loc[genes, 'chromosome'] = gene_annos['chromosome_name']
+    adata_merged.var.loc[peaks_shared, 'chromosome'] = peak_annos['chromosome'].values
+    adata_merged.var['start'] = 0
+    adata_merged.var.loc[genes, 'start'] = gene_annos['start_position']
+    adata_merged.var.loc[peaks_shared, 'start'] = peak_annos['start'].values
+    adata_merged.var['end'] = 0
+    adata_merged.var.loc[genes, 'end'] = gene_annos['end_position']
+    adata_merged.var.loc[peaks_shared, 'end'] = peak_annos['end'].values
+
     adata_merged.write(data_fdn / 'merged_nor-1_nor-2.h5ad')
