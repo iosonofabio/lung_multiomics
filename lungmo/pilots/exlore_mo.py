@@ -16,6 +16,27 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 
+def plot_clustermap_avg(ge_avg, log=True):
+    from scipy.spatial.distance import pdist
+    from scipy.cluster.hierarchy import linkage, leaves_list
+
+    if log:
+        ge_avg = np.log(ge_avg + 0.1)
+
+    pdis = pdist(ge_avg.values)
+    Zrow = linkage(pdis, method='average', optimal_ordering=True)
+
+    pdis = pdist(ge_avg.values.T, metric='correlation')
+    Zcol = linkage(pdis, method='average', optimal_ordering=True)
+
+    g = sns.clustermap(
+        ge_avg, row_linkage=Zrow, col_linkage=Zcol,
+        xticklabels=True, yticklabels=True,
+    )
+
+    return g
+
+
 if __name__ == '__main__':
 
     print('Read h5ad file')
@@ -66,7 +87,7 @@ if __name__ == '__main__':
         ax.set_xticklabels(gene_names, rotation=90)
         fig.tight_layout()
 
-    if True:
+    if False:
         print('Some QC')
         adata_ge = adata[:, adata.var['feature_types'] == 'Gene Expression']
         adata_pe = adata[:, adata.var['feature_types'] == 'Peaks']
@@ -90,7 +111,7 @@ if __name__ == '__main__':
         ax.legend()
         fig.tight_layout()
 
-    if True:
+    if False:
         print('Try standard clustering, with features from both')
         adatag = adata_nor[adata_nor.obs['coverage_ge'] >= 500]
         adata_ge = adatag[:, adatag.var['feature_types'] == 'Gene Expression']
@@ -132,7 +153,10 @@ if __name__ == '__main__':
                  'Mcpt4', 'Mcpt8', 'Itgax', 'Retnlg', 'Gzma', 'Areg',
                  'Acta2', 'Pdgfrb', 'Hhip', 'Pdgfra', 'Adh1',
                  ]
-        adata_tmp = adata_ge.raw.to_adata()[:, genes]
+        if adata_ge.raw is not None:
+            adata_tmp = adata_ge.raw.to_adata()[:, genes]
+        else:
+            adata_tmp = adata_ge[:, genes]
         clusters = adata_ge.obs['leiden'].cat.categories
         ge_avg = np.zeros((len(clusters), len(genes)))
         for i, clu in enumerate(clusters):
@@ -141,22 +165,16 @@ if __name__ == '__main__':
             ge_avg[i] = avgi
         ge_avg = pd.DataFrame(ge_avg, index=clusters, columns=genes)
 
-        from scipy.spatial.distance import pdist
-        from scipy.cluster.hierarchy import linkage, leaves_list
+        plot_clustermap_avg(ge_avg, log=False)
 
-        pdis = pdist(ge_avg.values)
-        Zrow = linkage(pdis, method='average', optimal_ordering=True)
-        idx_cells = leaves_list(Zrow) 
 
-        pdis = pdist(ge_avg.values.T, metric='correlation')
-        Zcol = linkage(pdis, method='average', optimal_ordering=True)
-        idx_genes = leaves_list(Zcol)
-        gene_names = [genes[i] for i in idx_genes]
-
-        sns.clustermap(
-            ge_avg, row_linkage=Zrow, col_linkage=Zcol,
-            xticklabels=True, yticklabels=True,
-        )
+    if True:
+        print('Assign cell types to clusters')
+        adata_ge = adata[:, adata.var['feature_types'] == 'Gene Expression']
+        adata_pe = adata[:, adata.var['feature_types'] == 'Peaks']
+        sc.pp.normalize_total(adata_ge, target_sum=1e4)
+        sc.pp.normalize_total(adata_pe, target_sum=1e4)
+        adata_nor = anndata.concat([adata_ge, adata_pe], axis=1, merge='first')
 
         assignment_d = {
             'Gja5': 'Arterial EC',
@@ -169,7 +187,7 @@ if __name__ == '__main__':
             'Plac8': 'Monocyte',
             'Itgae': 'cDC1',
             'Cd209a': 'cDC2',
-            'Mreg': 'cDC3',
+            #'Mreg': 'cDC3',
             'Mcpt8': 'Mast',
             'Mcpt4': 'Basophil',
             'Retnlg': 'Neutrophil',
@@ -182,11 +200,23 @@ if __name__ == '__main__':
             'Hhip': 'ASM',
             'Higd1b': 'Pericyte',
             'Prrx1': 'VSM',
-            'Epcam': 'Epithelial',
             'Actc1': 'ASM',
+            'Slc34a2': 'AT2',
+            'Col4a4': 'AT1',
+            'Cdkn1c': 'Ciliated',
+            'Reg3g': 'Club',
+            'Snap25': 'Neuron',
         }
-        genes = list(assignment_d.keys())
-        adata_tmp = adata_ge.raw.to_adata()[:, genes]
+        other_genes = [
+                'Ptprc', 'Cdh5', 'Epcam', 'Col6a2',
+                'Cd68', 'Pecam1', 'Krt19', 'Col1a1', 'Lyz1',
+                'Lyz2', 'Pdgfra', 'Pdgfrb', 'Tgfbi',
+                ]
+        genes = list(assignment_d.keys()) + other_genes
+        if adata_ge.raw is not None:
+            adata_tmp = adata_ge.raw.to_adata()[:, genes]
+        else:
+            adata_tmp = adata_ge[:, genes]
         clusters = adata_ge.obs['leiden'].cat.categories
         ge_avg = np.zeros((len(clusters), len(genes)))
         for i, clu in enumerate(clusters):
@@ -197,33 +227,50 @@ if __name__ == '__main__':
 
         # Automatic detection based on marker genes
         cell_type_d = {}
-        for gene in genes:
+        for gene in assignment_d:
             cell_type_d[ge_avg[gene].idxmax()] = assignment_d[gene]
         for clu in clusters:
             if clu not in cell_type_d:
                 cell_type_d[clu] = clu
+
+        ge_avg_tmp = ge_avg.copy()
+        ge_avg_tmp.index = ge_avg_tmp.index.map(cell_type_d)
+        #plot_clustermap_avg(ge_avg_tmp, log=True)
+
         # Manual corrections
         manual_corr = {
             '0': 'Alveolar FB',
             '1': 'Low-quality',
             '2': 'CAP1',
-            '25': 'Venous EC',
             '3': 'Epithelial',
-            '7': 'Alveolar FB',
+            '4': 'Myofibroblast',
             '5': 'Adventitial FB',
+            '7': 'Alveolar FB',
+            '8': 'Club',
+            '11': 'Doublet',
+            '17': 'Unknown',
             '20': 'VSM',
-            '8': 'Epithelial 2',
-            '9': 'Epithelial 3',
-            '11': 'Mese of some kind?',
-            '12': 'ASM',
-            '15': 'Epithelial 3',
-            '19': 'Monocyte',
+            '23': 'Doublet',
+            '25': 'Venous EC',
+            '29': 'Doublet',
+            '30': 'Doublet',
+            '32': 'Doublet',
+
         }
         cell_type_d.update(manual_corr)
+
+        ge_avg_tmp = ge_avg.copy()
+        ge_avg_tmp.index = ge_avg_tmp.index.map(cell_type_d)
+        plot_clustermap_avg(ge_avg_tmp, log=True)
+
         adata_ge.obs['Cell Type'] = pd.Categorical(
             adata_ge.obs['leiden'].map(cell_type_d),
         )
+        adata_ge.obs['High-quality'] = (~adata_ge.obs['Cell Type'].isin(
+                ['Doublet', 'Low-quality', 'Unknown'],
+                )).astype('i2')
         adata_nor.obs['Cell Type'] = adata_ge.obs['Cell Type']
+        adata_nor.obs['High-quality'] = adata_ge.obs['High-quality']
 
     if True:
         print('DE and DA within lineages')
@@ -247,31 +294,118 @@ if __name__ == '__main__':
         }
 
         lineage = 'Endothelial'
+        adata_nor = adata_nor[adata_nor.obs['High-quality'] == 1]
         adata_nor_gr = adata_nor[adata_nor.obs['Cell Type'].isin(lineages[lineage])]
+        adata_ge = adata_nor_gr[:, adata_nor_gr.var['feature_types'] == 'Gene Expression']
         adata_pe = adata_nor_gr[:, adata_nor_gr.var['feature_types'] == 'Peaks']
         sc.tl.rank_genes_groups(adata_pe, 'Cell Type', method='wilcoxon')
+        sc.tl.rank_genes_groups(adata_ge, 'Cell Type', method='wilcoxon')
+
+        from collections import defaultdict
+        da_lineage_dict = defaultdict(list)
+        for ftype, adatai in [('Peaks', adata_pe), ('Gene Expression', adata_ge)]:
+            tmp = adatai.uns['rank_genes_groups']
+            cell_types = tmp['names'].dtype.names
+            for i, ct in enumerate(cell_types):
+                idx = [x[i] for x in tmp['names']]
+                log_fc = [x[i] for x in tmp['logfoldchanges']]
+                score = [x[i] for x in tmp['scores']]
+                pval = [x[i] for x in tmp['pvals']]
+                df = pd.DataFrame({
+                    'feature': idx,
+                    'logfc': log_fc,
+                    'score': score,
+                    'pval': pval,
+                }).set_index('feature')
+                df.sort_values('score', ascending=False, inplace=True)
+                df['rank'] = np.arange(len(df)) + 1
+
+                for col in ['chromosome', 'start', 'end']:
+                    df[col] = adatai.var.loc[df.index, col]
+                df['feature_types'] = ftype
+                da_lineage_dict[ct].append(df)
+        for ct, dfs in da_lineage_dict.items():
+            da_lineage_dict[ct] = pd.concat(dfs, axis=0)
+
+    def plot_de_on_chroms(var, df):
+        chromosomes = [f'chr{i+1}' for i in range(19)] + ['chrX', 'chrY']
+        nchr = len(chromosomes)
+        chr_max = (var[['chromosome', 'start', 'end']]
+                      .groupby('chromosome')
+                      .max()
+                      .max(axis=1)
+                      .loc[chromosomes]) + 1
+
+        fig, ax = plt.subplots(figsize=(10, 10))
+
+        # Chromosome tracks
+        for i, chrom in enumerate(chromosomes):
+            ax.plot([0, 100], [nchr - 1 - i] * 2, lw=1, color='k', alpha=0.3)
+
+        cmap = {'Gene Expression': 'tomato', 'Peaks': 'steelblue'}
+        offsets = {'Gene Expression': +0.1, 'Peaks': -0.1}
+        for feature, row in df.iterrows():
+            chrom = row['chromosome']
+            if chrom not in chromosomes:
+                continue
+            ftype = row['feature_types']
+            irow = nchr - 1 - chromosomes.index(chrom)
+            x0 = 100.0 * row['start'] / chr_max[chrom]
+            x1 = 100.0 * row['end'] / chr_max[chrom]
+            # Min width 0.5% of chromosome, otherwise you don't even see them
+            if (x1 - x0) < 0.5:
+                x0 -= 0.25
+                x1 += 0.25
+            ax.plot(
+                [x0, x1], [irow + offsets[ftype]] * 2,
+                color=cmap[ftype], lw=3, alpha=0.8,
+            )
+            xm = 0.5 * (x0 + x1)
+            if ftype == 'Gene Expression':
+                ax.text(xm, irow + 0.15, feature, ha='center', va='bottom')
+                strand = var.at[feature, 'strand']
+                # Mark the beginning
+                if strand == -1:
+                    ax.plot(
+                        [x0 + 0.8 * (x1 - x0), x1],
+                        [irow + offsets[ftype]] * 2,
+                        color=cmap[ftype], lw=4, alpha=0.9,
+                        )
+                else:
+                    ax.plot(
+                        [x0, x0 + 0.2 * (x1 - x0)],
+                        [irow + offsets[ftype]] * 2,
+                        color=cmap[ftype], lw=4, alpha=0.9,
+                        )
+
+        labels = ['Gene', 'Open chromatin']
+        handles = [
+            plt.Rectangle((0, 0), 0, 0, color=cmap['Gene Expression']),
+            plt.Rectangle((0, 0), 0, 0, color=cmap['Peaks']),
+        ]
+        ax.legend(handles, labels,
+                  loc='center',
+                  bbox_to_anchor=(0.85, 1.015), bbox_transform=ax.transAxes,
+                  ncol=2,
+                  frameon=False,
+                  )
+
+        ax.set_yticks(np.arange(0, len(chromosomes)))
+        ax.set_yticklabels(chromosomes[::-1])
+        ax.set_xticks([0, 50, 100])
+        ax.set_xlabel('Position within chromosome[%]')
+        ax.set_ylim(-0.5, len(chromosomes) - 0.5)
+        ax.set_xlim(-1, 101)
+        fig.tight_layout()
         
-        da_lineage_dict = {}
-        tmp = adata_pe.uns['rank_genes_groups']
-        cell_types = tmp['names'].dtype.names
-        for i, ct in enumerate(cell_types):
-            idx = [x[i] for x in tmp['names']]
-            log_fc = [x[i] for x in tmp['logfoldchanges']]
-            score = [x[i] for x in tmp['scores']]
-            pval = [x[i] for x in tmp['pvals']]
-            df = pd.DataFrame({
-                'feature': idx,
-                'logfc': log_fc,
-                'score': score,
-                'pval': pval,
-            }).set_index('feature')
-            tmpi = df.index.str.split(':', expand=True).to_frame()
-            tmpii = tmpi[1].str.split('-', expand=True).astype(int)
-            df['chromosome'] = tmpi[0].values
-            df['start'] = tmpii[0].values
-            df['end'] = tmpii[1].values
-            da_lineage_dict[ct] = df
+        return (fig, ax)
 
-
-
-
+    for ct in da_lineage_dict:
+        fig, ax = plot_de_on_chroms(
+            adata.var,
+            da_lineage_dict[ct].nsmallest(100, 'rank'),
+        ) 
+        ax.set_title(ct)
+        fig.savefig(
+            f'../../figures/pilots/de_da_across_chromosomes_endos/{ct}.png',
+        )
