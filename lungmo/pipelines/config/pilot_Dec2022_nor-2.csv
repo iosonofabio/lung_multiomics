@@ -1,0 +1,3 @@
+fastqs,sample,library_type
+/home/fabio/projects/lung_multiomics/data/pilot_Dec2022/for_cellranger_arc/nor-2/scRNA-Seq,3_GEX-P7-nor-2,Gene Expression
+/home/fabio/projects/lung_multiomics/data/pilot_Dec2022/for_cellranger_arc/nor-2/scATAC-Seq,ATAC-P7-nor-2,Chromatin Accessibility

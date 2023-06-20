@@ -16,6 +16,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 
+figures_fdn = pathlib.Path('../../figures/pilots/lungmo_Dec2022')
+
+
 def plot_clustermap_avg(ge_avg, log=True):
     from scipy.spatial.distance import pdist
     from scipy.cluster.hierarchy import linkage, leaves_list
@@ -42,6 +45,9 @@ if __name__ == '__main__':
     print('Read h5ad file')
     data_fdn = pathlib.Path('../../data/pilot_Dec2022/counts')
     adata = anndata.read_h5ad(data_fdn / 'merged_nor-1_nor-2.h5ad')
+
+    # NOTE: binarize ATAC
+    #ngenes = (adata.var['feature_types'] == 'Gene Expression').sum()
 
     adata.obs['coverage_ge'] = adata[:, adata.var['feature_types'] == 'Gene Expression'].X.sum(axis=1)
     adata.obs['coverage_pe'] = adata[:, adata.var['feature_types'] == 'Peaks'].X.sum(axis=1)
@@ -87,7 +93,7 @@ if __name__ == '__main__':
         ax.set_xticklabels(gene_names, rotation=90)
         fig.tight_layout()
 
-    if False:
+    if True:
         print('Some QC')
         adata_ge = adata[:, adata.var['feature_types'] == 'Gene Expression']
         adata_pe = adata[:, adata.var['feature_types'] == 'Peaks']
@@ -105,11 +111,18 @@ if __name__ == '__main__':
                 alpha=0.2,
                 label=sample,
             )
+        ax.set_xscale('log')
+        ax.set_yscale('log')
         ax.set_xlabel('Coverage GEX [UMI]')
         ax.set_ylabel('Coverage ATAC [UMI]')
+        ax.axvline(500, ls='--', lw=2, color='k')
         ax.grid(True)
         ax.legend()
         fig.tight_layout()
+
+        fig.savefig(
+            figures_fdn / 'QC_number_of_UMI_per_cell.png'
+        )
 
     if False:
         print('Try standard clustering, with features from both')
@@ -166,7 +179,6 @@ if __name__ == '__main__':
         ge_avg = pd.DataFrame(ge_avg, index=clusters, columns=genes)
 
         plot_clustermap_avg(ge_avg, log=False)
-
 
     if True:
         print('Assign cell types to clusters')
@@ -266,6 +278,7 @@ if __name__ == '__main__':
         adata_ge.obs['Cell Type'] = pd.Categorical(
             adata_ge.obs['leiden'].map(cell_type_d),
         )
+        adata_ge.obs.loc[adata_ge.obs['coverage_ge'] < 500, 'Cell Type'] = 'Low-quality'
         adata_ge.obs['High-quality'] = (~adata_ge.obs['Cell Type'].isin(
                 ['Doublet', 'Low-quality', 'Unknown'],
                 )).astype('i2')
@@ -273,6 +286,52 @@ if __name__ == '__main__':
         adata_nor.obs['High-quality'] = adata_ge.obs['High-quality']
 
     if True:
+        print('Report how many cells per type/subtype we got')
+        df = adata_nor.obs.loc[adata_nor.obs['High-quality'] == 1].copy()
+        df['Cell Type'] = df['Cell Type'].cat.remove_unused_categories()
+        cst_abu = df.groupby(['Cell Type', 'sample']).size().unstack(fill_value=0)
+        cst_abu.to_csv(
+            figures_fdn / 'number_of_cells_per_sample_and_subtype.tsv',
+            sep='\t', index=True,
+        )
+
+    if True:
+        print('Show umap of annotated subtypes')
+        adatag = adata_nor[adata_nor.obs['High-quality'] == 1]
+        adatag.obs['Cell Type'] = adatag.obs['Cell Type'].cat.remove_unused_categories()
+
+        df = pd.read_csv(
+            '../../data/pilot_Dec2022/lung_multiomics_leiden_and_UMAP.csv',
+            index_col=0,
+        ).loc[adatag.obs_names]
+        adatag.obsm['X_umap'] = df[['UMAP1', 'UMAP2']].values
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        cell_types = adatag.obs['Cell Type'].unique()
+        cmap = dict(zip(cell_types, sns.color_palette('husl', n_colors=len(cell_types))))
+        df['Cell Type'] = adatag.obs['Cell Type']
+        for i, (cst, grp) in enumerate(df.groupby('Cell Type')):
+            x = grp['UMAP1']
+            y = grp['UMAP2']
+            marker = 'o' if i < 12 else 's'
+            ax.scatter(
+                x, y, color=cmap[cst], label=str(i+1) + '. ' + cst, alpha=0.3, s=30,
+                marker=marker,
+            )
+            ax.text(x.mean(), y.mean(), str(i+1), ha='center', va='center')
+        ax.legend(
+            loc='center left', title='Pilot multiomics - Dec 2022',
+            bbox_to_anchor=(1, 0.5), bbox_transform=ax.transAxes,
+            ncol=2, frameon=False,
+        )
+        fig.tight_layout()
+        fig.savefig(
+            figures_fdn / 'pilot_UMAP_by_cell_type.png',
+        )
+
+    sys.exit()
+
+    if False:
         print('DE and DA within lineages')
         lineages = {
             'Endothelial': [
@@ -400,12 +459,143 @@ if __name__ == '__main__':
         
         return (fig, ax)
 
-    for ct in da_lineage_dict:
-        fig, ax = plot_de_on_chroms(
-            adata.var,
-            da_lineage_dict[ct].nsmallest(100, 'rank'),
-        ) 
-        ax.set_title(ct)
-        fig.savefig(
-            f'../../figures/pilots/de_da_across_chromosomes_endos/{ct}.png',
-        )
+    if False:
+        for ct in da_lineage_dict:
+            fig, ax = plot_de_on_chroms(
+                adata.var,
+                da_lineage_dict[ct].nsmallest(100, 'rank'),
+            ) 
+            ax.set_title(ct)
+            fig.savefig(
+                figures_fdn / '..' / 'de_da_across_chromosomes_endos' / f'{ct}.png',
+            )
+
+    def get_closest_features(var, feature, target_type):
+        chrom, start, end = var.loc[feature][['chromosome', 'start', 'end']].values
+        other = var.loc[(var['chromosome'] == chrom) & (var['feature_types'] == target_type)].copy()
+        if len(other) == 0:
+            return pd.Series([])
+
+        is_overlap = ~((other['start'] > end) | (other['end'] < start))
+        other_ov = other.loc[is_overlap].index
+        if len(other_ov):
+            return pd.Series(np.zeros(len(other_ov), int), index=other_ov)
+
+        # No overlap, they are either before or after
+        after = other.loc[other['start'] > end].copy()
+        after['distance'] = after['start'] - end
+        after_best = after['distance'].idxmin()
+        before = other.loc[other['end'] < start].copy()
+        before['distance'] = start - before['end']
+        before_best = before['distance'].idxmin()
+
+        if after.at[after_best, 'distance'] < before.at[before_best, 'distance']:
+            return pd.Series([after.at[after_best, 'distance']], index=[after_best])
+        elif after.at[after_best, 'distance'] > before.at[before_best, 'distance']:
+            return pd.Series([before.at[before_best, 'distance']], index=[before_best])
+        else:
+            return pd.Series(
+                [before.at[before_best, 'distance'], after.at[after_best, 'distance']],
+                index=[before_best, after_best])
+
+    def get_closest_features_to_list(var, features, target_type):
+        tmp = [get_closest_features(var, fea, target_type) for fea in features]
+        res = []
+        for fea, ser in zip(features, tmp):
+            tmpi = ser.to_frame()
+            tmpi['feature'] = fea
+            res.append(tmpi)
+        res = pd.concat(res)
+        res.rename(columns={0: 'closest'}, inplace=True)
+        return res
+
+    ct = 'Venous EC'
+
+    genes = ['Slc6a2']
+    closest_peaks = get_closest_features_to_list(adata.var, genes, 'Peaks')
+    peaks = list(closest_peaks.index)
+    features = genes + peaks
+    avg = np.zeros((len(cell_types), len(features)))
+    for i, cst in enumerate(cell_types):
+        adatai = adata_nor_gr[adata_nor_gr.obs['Cell Type'] == cst, features]
+        avgi = adatai.X.mean(axis=0)
+        avg[i] = avgi
+    avg = pd.DataFrame(avg, index=cell_types, columns=features)
+    avg_plt = avg / avg.max(axis=0)
+    # Rename gene by adding coordinates
+    avg_plt.rename(columns={
+        genes[0]: '{:} ({:}:{:}-{:})'.format(
+            genes[0],
+            *adata.var.loc['Slc6a2'][['chromosome', 'start', 'end']].values),
+        }, inplace=True)
+    fig, ax = plt.subplots(figsize=(2.5, 4))
+    sns.heatmap(avg_plt, ax=ax, yticklabels=True, xticklabels=True,
+                cmap='copper')
+    fig.get_axes()[1].set_ylabel('Relative expr/access')
+    fig.tight_layout()
+
+
+    peaks = (da_lineage_dict[ct].query('feature_types == "Peaks"')
+                                .nlargest(40, 'score')
+                                .index)
+
+    closest_genes = get_closest_features_to_list(adata.var, peaks, 'Gene Expression')
+
+    cell_types = lineages['Endothelial']
+    genes = list(closest_genes.index)
+    features = list(peaks) + genes
+    avg = np.zeros((len(cell_types), len(features)))
+    for i, cst in enumerate(cell_types):
+        adatai = adata_nor_gr[adata_nor_gr.obs['Cell Type'] == cst, features]
+        avgi = adatai.X.mean(axis=0)
+        avg[i] = avgi
+    avg = pd.DataFrame(avg, index=cell_types, columns=features)
+
+    # Reorder
+    features_order = []
+    for peak in peaks:
+        features_order.append(peak)
+        features_order.extend(
+            list(closest_genes.loc[closest_genes['feature'] == peak].index))
+    avg = avg.loc[:, features_order]
+
+    # Use standard scale instead of Z scale because negative numbers are
+    # meaningless, esp for ATAC
+    #avg_plt = (avg - avg.mean(axis=0)) / avg.std(axis=0)
+    avg_plt = avg / avg.max(axis=0)
+
+    from scipy.stats import pearsonr
+    corrs = []
+    for gene, peak in closest_genes['feature'].items():
+        r = pearsonr(avg[gene].values, avg[peak].values)[0]
+        corrs.append(r)
+    corrs = pd.Series(corrs, index=closest_genes.index, name='corr').to_frame()
+    corrs['feature'] = closest_genes['feature']
+
+    tmp = corrs.fillna(0).nlargest(8, 'corr')['feature']
+    tmpi = set(list(tmp.index) + list(tmp.values))
+    features_selected = [x for x in features_order if x in tmpi]
+    closest_genes_selected = closest_genes.loc[tmp.index]
+    avg_plt = avg_plt[features_selected]
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    sns.heatmap(avg_plt, ax=ax, yticklabels=True, xticklabels=True)
+    #ax2 = ax.twiny()
+    #ax2.set_xticks(ax.get_xticks())
+    #xticks2 = []
+    #for fea in features_order:
+    #    if fea.startswith('chr'):
+    #        xtick = '-'
+    #    else:
+    #        xtick = str(closest_genes.loc[fea, 'closest'])
+    #    xticks2.append(xtick)
+    #ax2.set_xticklabels(xticks2, rotation=90)
+    for feature, grp in closest_genes_selected.groupby('feature'):
+        i0 = features_selected.index(feature)
+        i1 = i0 + len(grp) + 1
+        rect = plt.Rectangle((i0, 0), i1 - i0, len(cell_types),
+                             edgecolor='k', lw=2, facecolor='none',
+                             )
+        ax.add_patch(rect)
+    fig.tight_layout()
+
